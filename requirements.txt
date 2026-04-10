@@ -1,0 +1,8 @@
+# Core dependency (AI integration)
+requests>=2.31.0
+
+# Optional (better performance / parsing)
+lxml>=4.9.3
+
+# Dev / debugging (optional)
+colorama>=0.4.6
