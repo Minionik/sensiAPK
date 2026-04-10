@@ -45,10 +45,12 @@ def run_engine(ctx):
     # -----------------------
     findings = [classify_file(f) for f in findings]
 
-    # -----------------------
     # GRAPH CORRELATION
-    # -----------------------
     findings = build_graph(findings)
+
+# ADVANCED CORRELATION (CRITICAL)
+    if ctx.correlator:
+        findings = ctx.correlator(findings)
 
     # -----------------------
     # VALIDATION
