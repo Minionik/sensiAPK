@@ -67,3 +67,51 @@ Built for **penetration testers, security researchers, and red teamers**, it aut
 git clone https://github.com/yourusername/sensiAPK.git
 cd sensiAPK
 pip install -r requirements.txt
+
+# 🚀 Usage
+
+## 🔹 Basic Scan
+Run a standard scan on a target application:
+
+```bash
+python main.py -p com.target.app
+
+### AI Enhanced
+```bash
+python main.py -p com.target.app --ai
+
+### Interactive Mode
+```bash
+Interactive Mode
+
+### Help
+```bash
+python main.py -h
+
+### Detailed Help
+```bash
+python main.py --help-all
+
+## Setup
+```bash
+pip install -r requirements.txt
+
+### Linux/Mac
+```bash
+export OPENAI_API_KEY=your_api_key
+
+### Windows
+```bash
+setx OPENAI_API_KEY your_api_key
+
+
+### Connect Device
+```bash
+adb devices
+adb root
+
+
+
+
+
+
