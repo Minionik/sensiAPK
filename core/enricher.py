@@ -22,10 +22,12 @@ def enrich(f):
             pass
 
     # Classification (basic)
-    if "." in val and val.count(".") == 2:
-        f["classification"] = "jwt"
-    elif len(val) > 20 and f["entropy"] > 3.5:
+    if f["entropy"] > 4.2 and len(val) > 25:
         f["classification"] = "high_entropy_token"
+    elif "." in val and val.count(".") == 2:
+        f["classification"] = "jwt"
+    elif len(val) > 15:
+        f["classification"] = "possible_secret"
     else:
         f["classification"] = "low_value"
 
