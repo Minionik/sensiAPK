@@ -66,12 +66,23 @@ git clone https://github.com/Minionik/sensiAPK.git
 cd sensiAPK
 ```
 
-2. Install the necessary dependencies (if required):
+2. Create and activate a Python virtual environment to avoid conflicts (Recommended):
+```powershell
+# On Windows
+python -m venv venv
+.\venv\Scripts\activate
+
+# On Linux/macOS
+python3 -m venv venv
+source venv/bin/activate
+```
+
+3. Install the necessary dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Configure your AI Key (Optional but recommended):
+4. Configure your AI Key (Optional but recommended):
 ```powershell
 # On Windows
 $env:ANTHROPIC_API_KEY="your-api-key-here"
