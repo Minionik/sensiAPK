@@ -2,43 +2,154 @@ import os
 import json
 import requests
 
-API_KEY = os.getenv("ANTHROPIC_API_KEY")
-MODEL = "claude-3-5-sonnet-20241022"
+# ===============================
+# PROVIDER CONFIGURATION
+# ===============================
+
+# Defaults — overridden by configure() or env vars
+_PROVIDER = os.getenv("SENSIAPK_PROVIDER", "anthropic")  # anthropic | openai | ollama | grok
+_MODEL    = None   # None = use provider default
+_API_KEY  = None   # None = read from env at call time
+
+_PROVIDER_DEFAULTS = {
+    "anthropic": "claude-3-5-sonnet-20241022",
+    "openai":    "gpt-4o",
+    "ollama":    "llama3",
+    "grok":      "grok-2-latest",
+}
+
+_OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
+
+def configure(provider: str, model: str | None = None, api_key: str | None = None):
+    """Call this before run_engine to select a provider and model."""
+    global _PROVIDER, _MODEL, _API_KEY
+    _PROVIDER = provider.lower()
+    _MODEL    = model
+    _API_KEY  = api_key
+
+
+def _active_model():
+    return _MODEL or _PROVIDER_DEFAULTS.get(_PROVIDER, "unknown")
+
+
+def _active_key():
+    if _API_KEY:
+        return _API_KEY
+    env_map = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai":    "OPENAI_API_KEY",
+        "grok":      "XAI_API_KEY",
+    }
+    env_var = env_map.get(_PROVIDER)
+    return os.getenv(env_var) if env_var else None
 
 
 # ===============================
-# INTERNAL HELPERS
+# PROVIDER CALL IMPLEMENTATIONS
 # ===============================
 
-def _call_api(prompt, max_tokens=1024):
-    """Core API call with JSON response parsing."""
-    if not API_KEY:
-        return None
-
+def _call_anthropic(prompt: str, max_tokens: int):
+    key = _active_key()
+    if not key:
+        return {"error": "ANTHROPIC_API_KEY not set"}
     try:
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
-                "x-api-key": API_KEY,
+                "x-api-key": key,
                 "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
+                "content-type": "application/json",
             },
             json={
-                "model": MODEL,
+                "model": _active_model(),
                 "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0
+                "temperature": 0,
             },
-            timeout=45
+            timeout=60,
         )
         r.raise_for_status()
-        content = r.json()["content"][0]["text"]
+        return _parse_json(r.json()["content"][0]["text"])
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _call_openai_compat(prompt: str, max_tokens: int, base_url: str, key: str):
+    """Shared logic for OpenAI and Grok (OpenAI-compatible API)."""
+    if not key:
+        return {"error": f"API key not set for {_PROVIDER}"}
+    try:
+        r = requests.post(
+            f"{base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "content-type": "application/json",
+            },
+            json={
+                "model": _active_model(),
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+            },
+            timeout=60,
+        )
+        r.raise_for_status()
+        return _parse_json(r.json()["choices"][0]["message"]["content"])
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _call_openai(prompt: str, max_tokens: int):
+    return _call_openai_compat(
+        prompt, max_tokens,
+        base_url="https://api.openai.com/v1",
+        key=_active_key(),
+    )
+
+
+def _call_grok(prompt: str, max_tokens: int):
+    return _call_openai_compat(
+        prompt, max_tokens,
+        base_url="https://api.x.ai/v1",
+        key=_active_key(),
+    )
+
+
+def _call_ollama(prompt: str, max_tokens: int):
+    try:
+        r = requests.post(
+            f"{_OLLAMA_BASE}/api/chat",
+            json={
+                "model": _active_model(),
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "options": {"num_predict": max_tokens, "temperature": 0},
+            },
+            timeout=120,
+        )
+        r.raise_for_status()
+        content = r.json()["message"]["content"]
         return _parse_json(content)
     except Exception as e:
         return {"error": str(e)}
 
 
-def _parse_json(content):
+def _call_api(prompt: str, max_tokens: int = 1024):
+    """Dispatch to the configured provider."""
+    dispatch = {
+        "anthropic": _call_anthropic,
+        "openai":    _call_openai,
+        "grok":      _call_grok,
+        "ollama":    _call_ollama,
+    }
+    fn = dispatch.get(_PROVIDER)
+    if fn is None:
+        return {"error": f"Unknown provider: {_PROVIDER}"}
+    return fn(prompt, max_tokens)
+
+
+def _parse_json(content: str):
     """Extract JSON from possibly markdown-wrapped content."""
     if "```json" in content:
         content = content.split("```json")[1].split("```")[0].strip()
@@ -50,18 +161,19 @@ def _parse_json(content):
         return {"raw": content}
 
 
+def _has_provider():
+    """Return True if the active provider can actually make calls."""
+    if _PROVIDER == "ollama":
+        return True  # no key required
+    return bool(_active_key())
+
+
 # ===============================
 # PASS 1 — INDIVIDUAL SAST ANALYSIS
 # ===============================
 
 def analyze_finding(f):
-    """
-    Pass 1: Analyze each finding individually.
-    - Determines if it is a true positive or false positive
-    - Maps to OWASP Mobile Top 10 and CWE
-    - Flags findings that need recursive deeper analysis
-    """
-    if not API_KEY:
+    if not _has_provider():
         return f
 
     prompt = f"""You are a senior mobile application security researcher performing SAST (Static Application Security Testing) analysis on an Android application.
@@ -117,17 +229,9 @@ Return ONLY valid JSON — no extra text:
 # ===============================
 
 def batch_analyze(findings):
-    """
-    Pass 2: Send all findings together to identify:
-    - Multi-finding attack chains
-    - False positives that only become clear in context
-    - SAST-level severity verdicts per finding
-    - Overall application risk posture
-    """
-    if not API_KEY or not findings:
+    if not _has_provider() or not findings:
         return findings
 
-    # Build concise summaries to stay within token limits
     summaries = []
     for i, f in enumerate(findings):
         summaries.append({
@@ -194,36 +298,32 @@ Return ONLY valid JSON:
     if not result or "error" in result:
         return findings
 
-    # --- Apply batch results back to individual findings ---
-
-    fp_ids = {fp["finding_id"] for fp in result.get("false_positives", [])}
+    fp_ids       = {fp["finding_id"] for fp in result.get("false_positives", [])}
     confirmed_map = {c["finding_id"]: c for c in result.get("confirmed_vulnerabilities", [])}
-    fp_reasons = {fp["finding_id"]: fp.get("reason") for fp in result.get("false_positives", [])}
+    fp_reasons   = {fp["finding_id"]: fp.get("reason") for fp in result.get("false_positives", [])}
 
     for chain in result.get("attack_chains", []):
         for fid in chain.get("finding_ids", []):
             if 0 <= fid < len(findings):
                 findings[fid].setdefault("attack_chains", []).append({
                     "chain_description": chain.get("chain_description"),
-                    "combined_risk": chain.get("combined_risk"),
-                    "owasp_categories": chain.get("owasp_categories", []),
-                    "cwe_ids": chain.get("cwe_ids", [])
+                    "combined_risk":     chain.get("combined_risk"),
+                    "owasp_categories":  chain.get("owasp_categories", []),
+                    "cwe_ids":           chain.get("cwe_ids", [])
                 })
 
     for i, f in enumerate(findings):
         if i in fp_ids:
             f["batch_false_positive"] = True
-            f["batch_fp_reason"] = fp_reasons.get(i)
-
+            f["batch_fp_reason"]      = fp_reasons.get(i)
         if i in confirmed_map:
             f["sast_verdict"] = confirmed_map[i]
 
-    # Store the summary on the first finding
     if findings:
         findings[0]["batch_analysis_summary"] = {
-            "overall_risk": result.get("overall_risk"),
-            "key_findings_summary": result.get("key_findings_summary"),
-            "attack_chains_count": len(result.get("attack_chains", []))
+            "overall_risk":          result.get("overall_risk"),
+            "key_findings_summary":  result.get("key_findings_summary"),
+            "attack_chains_count":   len(result.get("attack_chains", []))
         }
 
     return findings
@@ -234,19 +334,13 @@ Return ONLY valid JSON:
 # ===============================
 
 def recursive_validate(f, all_findings, depth=0):
-    """
-    Pass 3: Recursive deep-dive for findings flagged by Pass 1.
-    Provides precise attack scenario, chaining opportunity, and remediation.
-    Max recursion depth: 2
-    """
-    if not API_KEY or depth >= 2:
+    if not _has_provider() or depth >= 2:
         return f
 
     ai = f.get("ai_struct", {})
     if not ai.get("needs_deeper_analysis"):
         return f
 
-    # Gather related findings as context (limit to 5)
     related = [
         other for other in all_findings
         if other is not f and (
@@ -258,12 +352,12 @@ def recursive_validate(f, all_findings, depth=0):
 
     related_summaries = [
         {
-            "type": r.get("type"),
-            "source": r.get("source"),
-            "value_preview": (r.get("value") or "")[:50],
+            "type":           r.get("type"),
+            "source":         r.get("source"),
+            "value_preview":  (r.get("value") or "")[:50],
             "classification": r.get("classification"),
-            "exploit_level": r.get("exploit_level"),
-            "owasp": r.get("ai_struct", {}).get("owasp_category")
+            "exploit_level":  r.get("exploit_level"),
+            "owasp":          r.get("ai_struct", {}).get("owasp_category")
         }
         for r in related
     ]
@@ -306,34 +400,22 @@ Return ONLY valid JSON:
 
     if result and "error" not in result:
         f["recursive_analysis"] = result
-        f["recursive_depth"] = depth + 1
+        f["recursive_depth"]    = depth + 1
 
-        # Recurse further if flagged (depth-limited)
         if result.get("needs_further_recursion") and depth < 1:
             f["ai_struct"]["needs_deeper_analysis"] = True
-            f["ai_struct"]["deeper_analysis_hint"] = result.get("attack_scenario", "")
+            f["ai_struct"]["deeper_analysis_hint"]  = result.get("attack_scenario", "")
             f = recursive_validate(f, all_findings, depth + 1)
 
     return f
 
 
 # ===============================
-# POC GENERATION (AI-POWERED)
-# ===============================
-
-# ===============================
 # PHASE 2 — CODE SAST BATCH AI
 # ===============================
 
 def batch_analyze_code(code_findings):
-    """
-    AI batch analysis of static code findings.
-    - Confirms / dismisses each finding as true positive
-    - Identifies compound code-level attack chains
-      (e.g., JS enabled + addJavascriptInterface + unvalidated URL = RCE)
-    - Removes pure pattern-match noise (e.g., Random() in test utils)
-    """
-    if not API_KEY or not code_findings:
+    if not _has_provider() or not code_findings:
         return code_findings
 
     summaries = []
@@ -394,29 +476,29 @@ Return ONLY valid JSON:
     if not result or "error" in result:
         return code_findings
 
-    confirmed_ids   = {c["id"]: c for c in result.get("confirmed", [])}
-    fp_ids          = {fp["id"]: fp.get("reason") for fp in result.get("false_positives", [])}
+    confirmed_ids = {c["id"]: c for c in result.get("confirmed", [])}
+    fp_ids        = {fp["id"]: fp.get("reason") for fp in result.get("false_positives", [])}
 
     for chain in result.get("compound_chains", []):
         for fid in chain.get("finding_ids", []):
             if 0 <= fid < len(code_findings):
                 code_findings[fid].setdefault("code_chains", []).append({
-                    "chain_description":  chain.get("chain_description"),
-                    "combined_severity":  chain.get("combined_severity"),
-                    "owasp":             chain.get("owasp"),
-                    "cwe":               chain.get("cwe"),
+                    "chain_description": chain.get("chain_description"),
+                    "combined_severity": chain.get("combined_severity"),
+                    "owasp":            chain.get("owasp"),
+                    "cwe":              chain.get("cwe"),
                 })
 
     for i, f in enumerate(code_findings):
         if i in fp_ids:
-            f["code_false_positive"]  = True
-            f["code_fp_reason"]       = fp_ids[i]
+            f["code_false_positive"] = True
+            f["code_fp_reason"]      = fp_ids[i]
 
         if i in confirmed_ids:
             c = confirmed_ids[i]
-            f["code_sast_confirmed"]  = True
-            f["code_sast_severity"]   = c.get("confirmed_severity", f.get("severity"))
-            f["code_sast_summary"]    = c.get("sast_summary")
+            f["code_sast_confirmed"] = True
+            f["code_sast_severity"]  = c.get("confirmed_severity", f.get("severity"))
+            f["code_sast_summary"]   = c.get("sast_summary")
 
     return code_findings
 
@@ -426,14 +508,9 @@ Return ONLY valid JSON:
 # ===============================
 
 def generate_poc(f):
-    """
-    Generate a precise, context-aware Proof of Concept.
-    Uses SAST verdicts from Pass 1/2/3 to produce a targeted PoC.
-    """
-    if not API_KEY:
+    if not _has_provider():
         return f
 
-    # Build SAST context from whichever pass produced the best verdict
     sast_context = (
         f.get("recursive_analysis") or
         f.get("sast_verdict") or

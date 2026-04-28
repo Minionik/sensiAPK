@@ -6,6 +6,7 @@ from datetime import datetime
 
 from core.context import Context
 from core.engine import run_engine
+import ai.assistant as assistant
 
 from collectors import shared_prefs, database, files, webview
 from analyzers import secrets, jwt
@@ -48,15 +49,24 @@ OPTIONS:
   --apk-dir         Path to decompiled APK folder (Jadx/Apktool output)
                     Enables Phase 2: Static code analysis (SAST)
   --ai              Enable 3-pass AI recursive SAST analysis
+  --provider        AI provider: anthropic | openai | ollama | grok
+                    (auto-detected from env keys if omitted)
+  --model           Model name override (e.g. gpt-4o, llama3, grok-2-latest)
+  --ollama-host     Ollama server URL (default: http://localhost:11434)
   --no-root         Skip adb root check (not recommended)
   --verbose         Show debug-level output including AI pass progress
-  --help            Show this detailed help
+  --help            Show this help
+  --help-all        Show this detailed help
 
 EXAMPLES:
   python main.py -p com.example.app
   python main.py -p com.example.app --ai --verbose
   python main.py -p com.example.app --apk-dir /path/to/jadx-output --ai
-  python main.py --ai   (will prompt for package)
+  python main.py -p com.example.app --ai --provider openai
+  python main.py -p com.example.app --ai --provider openai --model gpt-4-turbo
+  python main.py -p com.example.app --ai --provider grok --model grok-2-latest
+  python main.py -p com.example.app --ai --provider ollama --model llama3
+  python main.py -p com.example.app --ai --provider ollama --ollama-host http://192.168.1.5:11434
 
 WORKFLOW:
 
@@ -108,16 +118,34 @@ WORKFLOW:
   - Object deserialization, path traversal, ZipSlip
   - AI batch analysis of all code findings for chaining and FP removal
 
+AI PROVIDERS (--ai):
+  anthropic  Claude 3.5 Sonnet (default when ANTHROPIC_API_KEY is set)
+             Set env: ANTHROPIC_API_KEY
+  openai     GPT-4o (default model)
+             Set env: OPENAI_API_KEY
+             Example: --provider openai --model gpt-4-turbo
+  grok       xAI Grok-2 (OpenAI-compatible endpoint)
+             Set env: XAI_API_KEY
+             Example: --provider grok --model grok-2-latest
+  ollama     Local Ollama server (no API key needed)
+             Default host: http://localhost:11434
+             Example: --provider ollama --model llama3
+             Custom host: --ollama-host http://192.168.1.5:11434
+
+  If --provider is omitted, auto-detected from env keys in order:
+  ANTHROPIC_API_KEY → OPENAI_API_KEY → XAI_API_KEY → ollama (fallback)
+
 REQUIREMENTS:
   - Rooted device/emulator with ADB access (for Phase 1)
   - Decompiled APK folder via Jadx or Apktool (for --apk-dir)
   - sqlite3 installed
-  - ANTHROPIC_API_KEY environment variable set (for --ai)
+  - API key env var set for chosen provider (except Ollama)
 
 COMMON ISSUES:
   - "ADB root required"  → device not rooted
   - No findings          → app may use encryption or runtime-only storage
-  - AI not working       → ANTHROPIC_API_KEY not set in environment
+  - AI not working       → relevant API key not set in environment
+  - Ollama errors        → ensure `ollama serve` is running locally
   - Code phase empty     → check --apk-dir points to decompiled sources
 
 ============================================================
@@ -133,6 +161,13 @@ def parse_args():
     parser.add_argument("-p", "--package",  help="Target package name")
     parser.add_argument("--apk-dir",        help="Path to decompiled APK folder (Jadx/Apktool)")
     parser.add_argument("--ai",             action="store_true", help="Enable AI analysis")
+    parser.add_argument("--provider",       default=None,
+                        choices=["anthropic", "openai", "ollama", "grok"],
+                        help="AI provider (default: auto-detect from env keys)")
+    parser.add_argument("--model",          default=None,
+                        help="Model name override (e.g. gpt-4o, llama3, grok-2-latest)")
+    parser.add_argument("--ollama-host",    default=None,
+                        help="Ollama server URL (default: http://localhost:11434)")
     parser.add_argument("--no-root",        action="store_true", help="Skip root check")
     parser.add_argument("--verbose",        action="store_true", help="Verbose output")
     parser.add_argument("--help-all",       action="store_true", help="Show detailed help")
@@ -144,6 +179,18 @@ def parse_args():
         sys.exit(0)
 
     return args
+
+
+def _auto_detect_provider():
+    """Pick a provider based on which API keys are present in the environment."""
+    if os.getenv("ANTHROPIC_API_KEY"):
+        return "anthropic"
+    if os.getenv("OPENAI_API_KEY"):
+        return "openai"
+    if os.getenv("XAI_API_KEY"):
+        return "grok"
+    # Fall back to local Ollama — no key required
+    return "ollama"
 
 
 def main():
@@ -159,6 +206,17 @@ def main():
     if not pkg:
         print("[ERROR] Package name required")
         sys.exit(1)
+
+    # ------------------------------------------------------------------
+    # AI provider configuration
+    # ------------------------------------------------------------------
+    if args.ai:
+        provider = args.provider or _auto_detect_provider()
+        if args.ollama_host:
+            import ai.assistant as _asst
+            _asst._OLLAMA_BASE = args.ollama_host
+        assistant.configure(provider=provider, model=args.model)
+        print(f"[AI] Provider: {provider}  Model: {assistant._active_model()}")
 
     # ------------------------------------------------------------------
     # APK directory (Phase 2 — code analysis)
