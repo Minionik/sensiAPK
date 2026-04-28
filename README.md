@@ -83,14 +83,31 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-4. Configure your AI provider key (see [AI Providers](#ai-providers) for all options):
-```powershell
-# Anthropic — Windows
-$env:ANTHROPIC_API_KEY="your-key-here"
+4. Configure your AI provider key — set **one** of the following depending on your chosen provider (see [AI Providers](#ai-providers) for full details):
 
-# Anthropic — Linux/macOS
-export ANTHROPIC_API_KEY="your-key-here"
+```powershell
+# Anthropic Claude — Windows
+$env:ANTHROPIC_API_KEY="sk-ant-..."
+
+# OpenAI GPT — Windows
+$env:OPENAI_API_KEY="sk-..."
+
+# xAI Grok — Windows
+$env:XAI_API_KEY="xai-..."
 ```
+
+```bash
+# Anthropic Claude — Linux/macOS
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# OpenAI GPT — Linux/macOS
+export OPENAI_API_KEY="sk-..."
+
+# xAI Grok — Linux/macOS
+export XAI_API_KEY="xai-..."
+```
+
+> **Ollama (local):** No API key required. Just install Ollama, pull a model (`ollama pull llama3`), and run `ollama serve`. Then pass `--provider ollama` to sensiAPK.
 
 ---
 
